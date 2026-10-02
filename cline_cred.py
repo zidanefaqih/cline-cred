@@ -209,6 +209,16 @@ def backup_db(conn: sqlite3.Connection, db_path: str) -> str:
     os.makedirs(backup_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     dest = os.path.join(backup_dir, f"cline-cred-inject-{ts}.sqlite")
+    # Two writes inside the same second would otherwise collide and the second would
+    # silently overwrite the first, losing the snapshot taken before it. Bump to
+    # -1, -2, ... until the name is free. Happens when deleting several accounts in
+    # one batch, which is exactly when the backups matter most.
+    if os.path.exists(dest):
+        stem, ext = dest[: -len(".sqlite")], ".sqlite"
+        n = 1
+        while os.path.exists(f"{stem}-{n}{ext}"):
+            n += 1
+        dest = f"{stem}-{n}{ext}"
     with sqlite3.connect(dest) as target:
         conn.backup(target)
     return dest
@@ -221,6 +231,11 @@ def also_copy_sidecar(db_path: str) -> list[str]:
         src = db_path + suffix
         if os.path.exists(src):
             dest = src + f".bak-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+            if os.path.exists(dest):
+                n = 1
+                while os.path.exists(f"{dest}-{n}"):
+                    n += 1
+                dest = f"{dest}-{n}"
             try:
                 shutil.copy2(src, dest)
                 made.append(dest)
