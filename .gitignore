@@ -1,0 +1,18 @@
+# Kredensial — JANGAN PERNAH di-commit
+# Berkas ini berisi access token + refresh token = akses penuh ke akun.
+# Kalau masuk repo publik, tokennya dianggap bocor dan akunnya akan mati.
+
+cline-export-*.json
+kirim*.json
+akun*.json
+*.env
+auths/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+
+# Sampah Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
