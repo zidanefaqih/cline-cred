@@ -188,6 +188,43 @@ Example — check first without writing:
 python cline_cred.py --instance 9router import --file account.json --dry-run
 ```
 
+### An expired access token in the file is fine
+
+The credential file carries two tokens with very different lifetimes.
+
+| | Access token | Refresh token |
+| --- | --- | --- |
+| Lifetime | about 1 hour | no visible expiry |
+| Job | makes API requests | mints new access tokens |
+| Changes? | replaced constantly | never rotates |
+
+By the time you import the file, its access token may already be expired. **That does not
+matter.** The refresh token is the durable credential, and it is the one the tool actually
+needs. A file that sat in a folder for a week installs exactly as cleanly as a fresh one.
+
+What happens on import:
+
+1. The script records how many seconds the access token has left. An already-expired token is
+   recorded as `0`.
+2. The app sees the stale expiry and refreshes on first use, using the refresh token.
+3. From then on it keeps refreshing by itself, roughly once an hour.
+
+You can trigger the refresh deliberately:
+
+```bash
+python cline_cred.py --instance 9router import --file account.json --verify
+```
+
+`refreshed=true` in the output means this path ran and worked. It is a **stronger** result than
+`refreshed=false`, because it proves the refresh token is live.
+
+**The one thing that must be valid is the refresh token.** If it has been revoked, nothing can
+recover the account — see the `401` row in Troubleshooting.
+
+Verified against a live Cline account: exchanging its refresh token directly at
+`POST https://api.cline.bot/api/v1/auth/refresh` returned a fresh access token and the
+**same** refresh token back, unchanged.
+
 ---
 
 ## 4. Verify — do not skip this
@@ -367,7 +404,8 @@ and `testStatus` are simply ignored on import).
 A single object without the surrounding `[ ]` works too.
 
 **Required:** `email` (or a token that carries an email claim) and `refreshToken`. Without a
-`refreshToken`, the account dies within an hour.
+`refreshToken`, the account dies within an hour. The `accessToken` may already be expired when
+you import it — that is normal and harmless, see section 3.
 
 **Note:** the `name` field in the file is **ignored**. When creating a new row, the display
 name is always set to the email. To use a different display name, change it after importing:
