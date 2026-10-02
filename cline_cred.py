@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cline_cred.py — inject / list / verify / delete Cline (WorkOS OAuth) credentials
+cline_cred.py - inject / list / verify / delete Cline (WorkOS OAuth) credentials
 in a 9router-family SQLite DB (VansRouter, 9router, and any fork of it).
 
 WHY THIS EXISTS
@@ -12,8 +12,8 @@ flow that pastes an authorization *code*. There is no bulk-add and no
 token-import endpoint for Cline (unlike codex/cursor/kiro which each ship
 `/api/oauth/<p>/import*`).
 
-The API-only workaround — `POST /api/oauth/cline/exchange` with a raw `eyJ...`
-JWT — stores `authType:"access_token"` with NO refreshToken, so the connection
+The API-only workaround - `POST /api/oauth/cline/exchange` with a raw `eyJ...`
+JWT - stores `authType:"access_token"` with NO refreshToken, so the connection
 dies when the 1h WorkOS access token expires.
 
 This script writes the same row the dashboard OAuth flow would have written,
@@ -38,7 +38,7 @@ DB SCHEMA (verified live on VansRouter 0.91.33, schemaVersion 8)
     backoffLevel  0
     providerSpecificData {firstName, lastName}
     (errorCode/lastError/lastErrorAt/rateLimitedUntil = null)
-    (modelLock_<modelId> = null — per-model health locks, reset on activation)
+    (modelLock_<modelId> = null - per-model health locks, reset on activation)
 
 NO RESTART NEEDED: the app reads providerConnections from SQLite per request
 (no in-memory connection cache), so rows appear immediately in the dashboard,
@@ -510,7 +510,7 @@ def cmd_import(args):
     if args.dry_run:
         with connect(db_path) as conn:
             present = {r["email"].lower() for r in list_rows(conn) if r["email"]}
-        print(f"DRY RUN — target {db_path}\n")
+        print(f"DRY RUN - target {db_path}\n")
         for c in creds:
             known = c["email"].lower() in present
             print(f"  {c['email']:<40} source={c['source']:<45} "
@@ -683,12 +683,12 @@ def cmd_find_db(args):
         die("found data.sqlite file(s), but none has a providerConnections table")
 
     rows.sort(reverse=True)
-    print(f"{len(rows)} kandidat database:\n")
+    print(f"{len(rows)} candidate database(s):\n")
     for cline, total, path, origin in rows:
         print(f"  cline={cline:<4} total={total:<5} {path}")
-        print(f"                        dari: {origin}")
+        print(f"                        from: {origin}")
     best = rows[0]
-    print(f"\nPaling banyak akun Cline ({best[0]}) → pakai ini:\n")
+    print(f"\nMost Cline accounts ({best[0]}) -> use this one:\n")
     print(f'  --db "{best[2]}"')
 
 
@@ -779,7 +779,7 @@ def cmd_export(args):
         print(f"  [{r['priority']:>2}] {r['email']}")
         print(f"       access  : {mask(r['accessToken'])}")
         print(f"       refresh : {mask(r['refreshToken'])}")
-        print(f"       token exp {r['expiresAt'] or '-'} ({flag})  accessTokenExpiresAt, bukan refresh")
+        print(f"       token exp {r['expiresAt'] or '-'} ({flag})  accessTokenExpiresAt, not the refresh token")
         print(f"       test={r['testStatus']} active={r['isActive']} id={r['id']}")
         if args.show_tokens:
             print(f"       AT: {r['accessToken']}")

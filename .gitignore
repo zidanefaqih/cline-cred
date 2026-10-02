@@ -1,9 +1,12 @@
-# Kredensial — JANGAN PERNAH di-commit
-# Berkas ini berisi access token + refresh token = akses penuh ke akun.
-# Kalau masuk repo publik, tokennya dianggap bocor dan akunnya akan mati.
+# Credentials — NEVER commit these.
+# Files matching these patterns carry access tokens + refresh tokens, which grant
+# full access to an account. If one lands in a public repo, the tokens are treated
+# as leaked and the accounts get killed.
 
 cline-export-*.json
+handover*.json
 kirim*.json
+account*.json
 akun*.json
 *.env
 auths/
@@ -11,7 +14,7 @@ auths/
 *.sqlite-journal
 *.sqlite-wal
 
-# Sampah Python
+# Python junk
 __pycache__/
 *.py[cod]
 .venv/
