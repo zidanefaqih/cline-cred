@@ -3,10 +3,11 @@
 # full access to an account. If one lands in a public repo, the tokens are treated
 # as leaked and the accounts get killed.
 
-cline-export-*.json
-handover*.json
-kirim*.json
-account*.json
+# Every JSON file in this folder is either an exported credential set or a
+# credential file handed to you. None of it belongs in git, so block JSON
+# wholesale. If you ever need to commit a JSON file, force it: git add -f <file>
+*.json
+
 *.env
 auths/
 *.sqlite
