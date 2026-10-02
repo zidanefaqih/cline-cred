@@ -95,7 +95,7 @@ import uuid
 from datetime import datetime, timezone
 
 DEFAULT_INSTANCES = {
-    # "~" supaya path default benar di mesin siapa pun, bukan hanya di mesin pengembang.
+    # "~" so the default path is correct on anyone's machine, not just the developer's.
     "vansrouter": {"container": "vansrouter", "data": "~/.vansrouter", "port": 20130},
     "9router": {"container": "9router", "data": "~/.9router", "port": 20128},
 }

@@ -1,4 +1,4 @@
-# Credentials — NEVER commit these.
+# Credentials - NEVER commit these.
 # Files matching these patterns carry access tokens + refresh tokens, which grant
 # full access to an account. If one lands in a public repo, the tokens are treated
 # as leaked and the accounts get killed.
@@ -7,7 +7,6 @@ cline-export-*.json
 handover*.json
 kirim*.json
 account*.json
-akun*.json
 *.env
 auths/
 *.sqlite
