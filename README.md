@@ -3,6 +3,9 @@
 One Python script that writes Cline (WorkOS OAuth) account credentials straight into a
 9router or VansRouter database. No browser, no clicking, no restart.
 
+Accepts **either** an OAuth pair (access + refresh token) **or** a static API key. You pick
+which one gets installed — see section 3b.
+
 **Zero dependencies.** Standard library only.
 
 ---
@@ -23,6 +26,8 @@ python cline_cred.py find-db
 
 # 3. Install the account. Replace account.json with the credential file you were given.
 python cline_cred.py --instance 9router import --file account.json --verify
+#    If the file carries an "apiKey" and the user wants the static-key path instead,
+#    add --use-api-key. Both work; see section 3b to choose.
 
 # 4. Prove it worked. Replace with the email from the credential file.
 python cline_cred.py --instance 9router verify --email name@domain.com
@@ -181,12 +186,83 @@ Running the same command twice **will not create a duplicate**. Deduplication is
 | `--priority 5` | Set the account priority manually |
 | `--no-backup` | Skip the automatic backup (not recommended) |
 | `--cpa` | Read from CPA's `cline-*.json` files (requires Docker) |
+| `--use-api-key` | Install the file's `apiKey` instead of the OAuth pair — see section 3b |
 
 Example — check first without writing:
 
 ```bash
 python cline_cred.py --instance 9router import --file account.json --dry-run
 ```
+
+### 3b. Two ways to authenticate — pick one
+
+A Cline credential can carry an **OAuth pair** or a **static API key**, or both. Both work.
+Pick with `--use-api-key`.
+
+| | OAuth pair (`accessToken` + `refreshToken`) | API key (`apiKey`, `"sk_..."`) |
+| --- | --- | --- |
+| Install | `import --file account.json` | `import --file account.json --use-api-key` |
+| Expires | access token ~1 hour, **auto-refreshed** | **never expires** |
+| Needs a refresh token | yes | no |
+| The "is my token expired?" question | happens | **does not exist** |
+| Works in VansRouter / 9router | yes | yes |
+| Works in the Cline VS Code extension | yes (that is its own sign-in) | no — the extension has no API-key login |
+
+**What the script writes.** Only the one you asked for:
+
+```
+--use-api-key          data.apiKey = "sk_..."
+                       data.accessToken = ""   data.refreshToken = ""
+                       data.expiresAt = null   data.lastRefreshAt = null
+
+(default)              data.accessToken = "workos:<jwt>"
+                       data.refreshToken = "<rt>"
+                       data.expiresAt = "<iso>"
+                       data.apiKey removed if it was there before
+```
+
+**Do not install both into one row.** The app resolves the credential with
+`c.apiKey || c.accessToken`, so an API key always wins and the OAuth pair becomes dead weight
+that never gets refreshed. That is why the two modes are mutually exclusive here.
+
+**A file that carries only an `apiKey` (no `accessToken`, no `refreshToken`) is refused**
+unless you pass `--use-api-key` — the script will not write a row with an empty access token
+and no way to refresh it. `--dry-run` marks such a line `REFUSED` and says why.
+
+**Why API keys are attractive for end users:** an API key has no expiry field at all, so the
+most common support question — *"the token in my file looks expired, is my account dead?"* —
+never comes up. The account also never needs a refresh, so nothing can fail to refresh.
+
+**Where to get an API key.** Two ways, both give the same result:
+
+1. The Cline dashboard (account settings).
+2. Programmatically, which is what you want for many accounts at once:
+
+```bash
+# Mint one with the account's OAuth access token (note the workos: prefix).
+curl -sS -X POST https://api.cline.bot/api/v1/api-keys \
+  -H "Authorization: Bearer workos:<accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"sold-2026-10-13"}'
+# -> {"data":{"api_key":{...,"id":"apk-..."},"secret_key":"sk_..."}}
+#    secret_key appears ONCE. Save it now; it cannot be read back.
+
+# List keys (never returns the secret again):
+curl -sS -H "Authorization: Bearer workos:<accessToken>" https://api.cline.bot/api/v1/api-keys
+
+# Revoke one:
+curl -sS -X DELETE -H "Authorization: Bearer workos:<accessToken>" \
+  https://api.cline.bot/api/v1/api-keys/<id>
+```
+
+A newly minted key works immediately. The access token used to mint it may be expired —
+refresh it first with `POST /api/v1/auth/refresh` if the call returns 401.
+
+**One catch worth knowing:** `cline-free/*` models are refused with `403 only available via
+Cline product surfaces` unless the request carries an `X-CLIENT-TYPE` header. VansRouter and
+9router send it themselves, so an API key works there with no extra setup. A generic
+OpenAI-compatible client that cannot set custom headers will get 403 on every free model — for
+those, use the OAuth pair through 9router instead.
 
 ### An expired access token in the file is fine
 
@@ -300,6 +376,9 @@ Formats: `json` (full dump), `cpa` (compact, for handing to someone else), `env`
 variables). Files are written with restricted permissions (0600) — **this has no effect on
 Windows**, see section 6.
 
+A row that was installed with `--use-api-key` exports its `apiKey` (the `env` format emits
+`CLINE_<n>_API_KEY`), so an export round-trips through `import --use-api-key` unchanged.
+
 ### Delete an account
 
 ```bash
@@ -392,20 +471,29 @@ The credential file is JSON. Two shapes are accepted.
     "email": "name@domain.com",
     "accessToken": "eyJhbGciOi...",
     "refreshToken": "HR0bHGRP...",
+    "apiKey": "sk_...",
     "expiresAt": "2026-10-02T15:20:12.130Z",
     "providerSpecificData": { "firstName": "", "lastName": "" }
   }
 ]
 ```
 
+`apiKey` is optional. If present, choose which one to install with `--use-api-key` — see
+section 3b. Without the flag the OAuth pair is installed and `apiKey` is ignored.
+
 **Database dump shape** (also accepted; extra fields such as `id`, `priority`, `isActive`,
 and `testStatus` are simply ignored on import).
 
 A single object without the surrounding `[ ]` works too.
 
-**Required:** `email` (or a token that carries an email claim) and `refreshToken`. Without a
-`refreshToken`, the account dies within an hour. The `accessToken` may already be expired when
-you import it — that is normal and harmless, see section 3.
+**Required:** `email` (or a token that carries an email claim), plus **one** of:
+
+- `refreshToken` — the normal path. Without it the OAuth account dies within an hour.
+- `apiKey` — a static key. Install it with `--use-api-key`; no refresh token needed and
+  nothing expires.
+
+The `accessToken` may already be expired when you import it — that is normal and harmless,
+see section 3.
 
 **Note:** the `name` field in the file is **ignored**. When creating a new row, the display
 name is always set to the email. To use a different display name, change it after importing:
@@ -432,7 +520,7 @@ providerConnections(
 )
 ```
 
-Contents of `data` for a Cline OAuth row:
+Contents of `data` for a Cline **OAuth** row:
 
 ```
 accessToken   JWT (with or without the "workos:" prefix — both are valid)
@@ -444,6 +532,25 @@ testStatus    "active"
 backoffLevel  0
 providerSpecificData {firstName, lastName}
 ```
+
+Contents of `data` for a Cline **API key** row (written by `--use-api-key`):
+
+```
+apiKey        "sk_..."   static, never expires
+accessToken   ""         deliberately empty
+refreshToken  ""         deliberately empty — nothing to refresh
+expiresAt     null
+expiresIn     0
+lastRefreshAt null
+testStatus    "active"
+backoffLevel  0
+providerSpecificData {firstName, lastName}
+```
+
+The app reads the credential through `rowToConn()` in `src/lib/db/repos/connectionsRepo.js`,
+which spreads the `data` blob over the row — so `data.apiKey` becomes `conn.apiKey`. The header
+hook then resolves `c.apiKey || c.accessToken`, which is why a row should carry **one or the
+other, never both**.
 
 About the `workos:` prefix: the dashboard OAuth flow stores a **raw** JWT, while importing
 through this script stores a **prefixed** one. Both are correct — the app normalises at call
@@ -457,6 +564,9 @@ Do not "fix" either of them.
 - **Automatic backup** to `<data-dir>/db/backups/` before every write (unless `--no-backup`).
 - **Never prints token values**, unless you explicitly ask with `--show-tokens`.
 - **Deduplicated by email**, same as the app — re-running does not duplicate rows.
+- **One credential per row.** `--use-api-key` and the default OAuth mode are mutually
+  exclusive by design; the script clears the field you did not choose so a stale credential
+  can never shadow the active one.
 
 **A credential file is equivalent to a password.** Anyone holding it can use that account.
 Do not put it in a git repository, do not send it over a public channel, and do not leave it

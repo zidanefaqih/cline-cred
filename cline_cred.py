@@ -19,6 +19,29 @@ dies when the 1h WorkOS access token expires.
 This script writes the same row the dashboard OAuth flow would have written,
 including the refresh token, directly into `providerConnections`.
 
+TWO WAYS TO AUTHENTICATE - pick one per credential
+-------------------------------------------------
+A Cline credential can carry either, or both. They are equally valid; the
+difference is who does the work of staying valid.
+
+  OAuth pair   accessToken + refreshToken      (default)
+               The app refreshes the 1-hour access token by itself. Requires a
+               refresh token. The access token in the file may already be
+               expired - that is harmless, see below.
+
+  API key      apiKey ("sk_...")               (--use-api-key)
+               A static key, minted from the Cline dashboard or via
+               `POST /api/v1/api-keys`. It never expires and never needs a
+               refresh, so the whole "is my token expired?" class of support
+               questions disappears. VansRouter/9router send it through the
+               same `clineHeaders` hook, so `cline-free/*` models work.
+
+If a credential file carries both, choose with `--use-api-key`.
+
+Do NOT put both into one row: the app's header hook is
+`c.apiKey || c.accessToken`, so an `apiKey` always wins and the OAuth pair
+becomes dead weight. This script therefore writes only the one you asked for.
+
 DB SCHEMA (verified live on VansRouter 0.91.33, schemaVersion 8)
 ----------------------------------------------------------------
   providerConnections(
@@ -64,6 +87,9 @@ USAGE
 
   # import one file (CPA shape, VansRouter shape, or a list of them)
   python3 cline_cred.py import --file /tmp/cline.json
+
+  # same file, but install its static apiKey instead of the OAuth pair
+  python3 cline_cred.py import --file /tmp/cline.json --use-api-key
 
   # have the app itself prove the injected token works (upstream users/me probe,
   # and it will refresh via the injected refresh token when stale)
@@ -264,9 +290,15 @@ def normalize_credential(raw: dict, source: str) -> dict | None:
         or (raw.get("credentials") or {}).get("refreshToken")
         or (raw.get("credentials") or {}).get("refresh_token") or ""
     )
+    api_key = (
+        raw.get("apiKey") or raw.get("api_key")
+        or (raw.get("credentials") or {}).get("apiKey")
+        or (raw.get("credentials") or {}).get("api_key") or ""
+    )
     access = normalize_access_token(str(access))
     refresh = str(refresh).strip()
-    if not access and not refresh:
+    api_key = str(api_key).strip()
+    if not access and not refresh and not api_key:
         return None
 
     email = str(
@@ -284,6 +316,7 @@ def normalize_credential(raw: dict, source: str) -> dict | None:
     return {
         "accessToken": access,
         "refreshToken": refresh,
+        "apiKey": api_key,
         "email": email,
         "expiresAt": to_iso_z(expires),
         "firstName": str(specific.get("firstName") or raw.get("firstName") or ""),
@@ -380,6 +413,7 @@ def list_rows(conn: sqlite3.Connection) -> list[dict]:
             "testStatus": data.get("testStatus"),
             "expiresAt": exp,
             "hasRefreshToken": bool(data.get("refreshToken")),
+            "hasApiKey": bool(data.get("apiKey")),
             "expired": _is_expired(exp),
         })
     return out
@@ -411,8 +445,13 @@ def find_row(conn: sqlite3.Connection, email: str):
     return None
 
 
-def build_data(cred: dict, existing: dict | None) -> dict:
-    """Mirror what createProviderConnection + resetHealthStateOnActivation store."""
+def build_data(cred: dict, existing: dict | None, use_api_key: bool = False) -> dict:
+    """Mirror what createProviderConnection + resetHealthStateOnActivation store.
+
+    use_api_key=True writes a static API key instead of the OAuth pair. Only one
+    of the two is ever written: the app resolves `c.apiKey || c.accessToken`, so
+    carrying both would silently make the API key the only one in use.
+    """
     expires_at = cred["expiresAt"] or (existing or {}).get("expiresAt")
     expires_in = 3600
     if expires_at:
@@ -425,12 +464,7 @@ def build_data(cred: dict, existing: dict | None) -> dict:
             pass
 
     data = dict(existing or {})
-    data.update({
-        "accessToken": cred["accessToken"] or data.get("accessToken", ""),
-        "refreshToken": cred["refreshToken"] or data.get("refreshToken", ""),
-        "expiresAt": expires_at,
-        "expiresIn": expires_in,
-        "lastRefreshAt": now_iso(),
+    common = {
         "testStatus": "active",
         "lastError": None,
         "lastErrorAt": None,
@@ -442,7 +476,28 @@ def build_data(cred: dict, existing: dict | None) -> dict:
             "firstName": cred["firstName"],
             "lastName": cred["lastName"],
         },
-    })
+    }
+    if use_api_key:
+        data.update(common)
+        data.update({
+            "apiKey": cred["apiKey"],
+            # No refresh token and no expiry: nothing here ever needs renewing.
+            "accessToken": "",
+            "refreshToken": "",
+            "expiresAt": None,
+            "expiresIn": 0,
+            "lastRefreshAt": None,
+        })
+    else:
+        data.pop("apiKey", None)
+        data.update(common)
+        data.update({
+            "accessToken": cred["accessToken"] or data.get("accessToken", ""),
+            "refreshToken": cred["refreshToken"] or data.get("refreshToken", ""),
+            "expiresAt": expires_at,
+            "expiresIn": expires_in,
+            "lastRefreshAt": now_iso(),
+        })
     # Activation clears per-model health locks (app does the same).
     for key in list(data.keys()):
         if key.startswith(MODEL_LOCK_PREFIX):
@@ -450,7 +505,8 @@ def build_data(cred: dict, existing: dict | None) -> dict:
     return data
 
 
-def upsert(conn: sqlite3.Connection, cred: dict, priority: int | None) -> tuple[str, str]:
+def upsert(conn: sqlite3.Connection, cred: dict, priority: int | None,
+           use_api_key: bool = False) -> tuple[str, str]:
     """Returns (action, connection_id)."""
     email = cred["email"]
     if not email:
@@ -459,7 +515,7 @@ def upsert(conn: sqlite3.Connection, cred: dict, priority: int | None) -> tuple[
 
     if row:
         existing_data = json.loads(row["data"] or "{}")
-        data = build_data(cred, existing_data)
+        data = build_data(cred, existing_data, use_api_key)
         conn.execute(
             "UPDATE providerConnections SET data=?, email=?, updatedAt=?, isActive=?, name=? WHERE id=?",
             (
@@ -478,7 +534,7 @@ def upsert(conn: sqlite3.Connection, cred: dict, priority: int | None) -> tuple[
     ).fetchone()[0]
     conn_id = str(uuid.uuid4())
     ts = now_iso()
-    data = build_data(cred, None)
+    data = build_data(cred, None, use_api_key)
     conn.execute(
         """INSERT INTO providerConnections
              (id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
@@ -506,9 +562,10 @@ def cmd_list(args):
     for r in rows:
         flag = "expired" if r["expired"] else ("ok" if r["expired"] is not None else "no-expiry")
         rt = "RT" if r["hasRefreshToken"] else "--"
+        ak = "APIKEY" if r["hasApiKey"] else ""
         print(f"  [{r['priority']:>2}] {r['email'] or r['name']}")
         print(f"       authType={r['authType']} active={r['isActive']} test={r['testStatus']} "
-              f"{rt} exp={r['expiresAt'] or '-'} ({flag})")
+              f"{rt} {ak} exp={r['expiresAt'] or '-'} ({flag})")
         print(f"       id={r['id']}")
 
 
@@ -522,17 +579,51 @@ def cmd_import(args):
         return
 
     db_path = resolve_db_path(args)
+
+    def has_oauth(c: dict) -> bool:
+        return bool(c["accessToken"] or c["refreshToken"])
+
+    # A credential that carries only an apiKey cannot be installed as OAuth: the row
+    # would end up with an empty accessToken and no refresh token, i.e. dead. Refuse
+    # instead of writing it. Same in reverse for --use-api-key.
+    keyless = [c["email"] for c in creds if args.use_api_key and not c.get("apiKey")]
+    oauthless = [c["email"] for c in creds
+                 if not args.use_api_key and c.get("apiKey") and not has_oauth(c)]
+
     if args.dry_run:
         with connect(db_path) as conn:
             present = {r["email"].lower() for r in list_rows(conn) if r["email"]}
         print(f"DRY RUN - target {db_path}\n")
         for c in creds:
             known = c["email"].lower() in present
+            has_key = bool(c.get("apiKey"))
+            if args.use_api_key:
+                pick = "apiKey" if has_key else "REFUSED (no apiKey in file)"
+            elif has_key and not has_oauth(c):
+                pick = "REFUSED (apiKey only - add --use-api-key)"
+            else:
+                pick = "oauth"
             print(f"  {c['email']:<40} source={c['source']:<45} "
                   f"{'UPDATE existing' if known else 'INSERT new'} "
-                  f"rt={'yes' if c['refreshToken'] else 'NO'}")
+                  f"rt={'yes' if c['refreshToken'] else 'NO'} "
+                  f"key={'yes' if has_key else 'NO'} -> {pick}")
+        if keyless:
+            print(f"\n[!] --use-api-key was given but these have no apiKey: " + ", ".join(keyless))
+        if oauthless:
+            print(f"\n[!] these carry only an apiKey, so --use-api-key is required: "
+                  + ", ".join(oauthless))
         print(f"\n{len(creds)} credential(s) parsed, nothing written.")
         return
+
+    if keyless:
+        die("--use-api-key was given but these have no apiKey in the file: "
+            + ", ".join(keyless))
+    if oauthless:
+        die("these carry only an apiKey and no OAuth pair, so they cannot be installed "
+            "without --use-api-key: " + ", ".join(oauthless))
+
+    if args.use_api_key:
+        print("[i] --use-api-key: writing the static API key instead of the OAuth pair")
 
     if args.missing_only:
         with connect(db_path) as conn:
@@ -551,7 +642,7 @@ def cmd_import(args):
             print(f"[i] backup: {dest}" + (f" (+{len(side)} sidecar)" if side else ""))
         results = []
         for c in creds:
-            action, conn_id = upsert(conn, c, args.priority)
+            action, conn_id = upsert(conn, c, args.priority, args.use_api_key)
             results.append((action, conn_id, c["email"]))
         conn.commit()
 
@@ -733,6 +824,7 @@ def export_rows(conn: sqlite3.Connection, only_email: str | None = None) -> list
             "isActive": row["isActive"],
             "accessToken": access,
             "refreshToken": data.get("refreshToken", "") or "",
+            "apiKey": data.get("apiKey", "") or "",
             "expiresAt": data.get("expiresAt"),
             "expiresIn": data.get("expiresIn"),
             "lastRefreshAt": data.get("lastRefreshAt"),
@@ -761,6 +853,7 @@ def cmd_export(args):
             "email": r["email"],
             "accessToken": r["accessToken"],
             "refreshToken": r["refreshToken"],
+            "apiKey": r["apiKey"],
             "expiresAt": r["expiresAt"],
             "providerSpecificData": r["providerSpecificData"],
         } for r in rows]
@@ -772,6 +865,8 @@ def cmd_export(args):
             lines.append(f"export CLINE_{i}_EMAIL={json.dumps(r['email'])}")
             lines.append(f"export CLINE_{i}_ACCESS_TOKEN={json.dumps(r['accessToken'])}")
             lines.append(f"export CLINE_{i}_REFRESH_TOKEN={json.dumps(r['refreshToken'])}")
+            if r["apiKey"]:
+                lines.append(f"export CLINE_{i}_API_KEY={json.dumps(r['apiKey'])}")
         body = "\n".join(lines) + "\n"
     else:
         payload = rows
@@ -803,7 +898,8 @@ def cmd_export(args):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Inject/list/verify/delete Cline OAuth credentials in a 9router-family DB.",
+        description="Inject/list/verify/delete Cline credentials (OAuth pair or static\n"
+                    "API key) in a 9router-family DB.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -822,6 +918,9 @@ def main():
     imp.add_argument("--only", help="substring filter on the source file name (with --cpa)")
     imp.add_argument("--missing-only", action="store_true", help="skip emails already in this DB")
     imp.add_argument("--priority", type=int, help="explicit priority for new rows")
+    imp.add_argument("--use-api-key", action="store_true",
+                     help="install the static apiKey from the file instead of the OAuth pair "
+                          "(no refresh token needed; the key never expires)")
     imp.add_argument("--dry-run", action="store_true", help="parse and report, write nothing")
     imp.add_argument("--verify", action="store_true", help="run the app's connection test after writing")
 
