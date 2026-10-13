@@ -35,6 +35,26 @@ python cline_cred.py --instance 9router verify --email name@domain.com
 
 **You are done when step 4 prints `PASS`.**
 
+### Which credential? Ask the user — or look at what the file has
+
+A Cline credential can be an **OAuth pair** or a **static API key**. Section 3b has the full
+comparison; the short version for an agent deciding what to run:
+
+| The file you were given | Command |
+| --- | --- |
+| `accessToken` + `refreshToken` | `import --file account.json` |
+| `accessToken` + `refreshToken` + `apiKey` | **ask which one the user wants**; both work |
+| only `apiKey` (no tokens) | `import --file account.json --use-api-key` — the OAuth path is refused |
+
+Do not install both into one row, and do not silently pick one when the file has both: the
+app resolves `c.apiKey || c.accessToken`, so an API key wins and the OAuth pair stops being
+refreshed. If the user has no preference, say what the difference is in one line — an API key
+never expires, but it needs a client that can send custom headers, so OAuth is the safer
+default. Ask, then run.
+
+`--dry-run` prints which path each line would take (`-> oauth` or `-> apiKey`) and refuses the
+impossible combinations before anything is written. Use it first if you are unsure.
+
 If step 2 prints `DB not found` or reports `0 cline connection(s)` when an account should
 be there, go to **section 2**. That is the cause of 90% of failures.
 
