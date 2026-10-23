@@ -351,6 +351,32 @@ python cline_cred.py --instance 9router verify --email budi
 **Verify requires the app to be running**, because the script calls the app's own test
 endpoint on `127.0.0.1`. If the app is down, you get a connection failure.
 
+### ⚠️ `HTTP 401 {"error":"Unauthorized"}` is NOT a dead credential
+
+If the app's dashboard login is enabled, the test endpoint is refused **before Cline is
+contacted**, because this script sends no dashboard cookie. You get 401 for **every**
+connection, healthy or not.
+
+Read the two failures apart — they mean opposite things:
+
+| Output | Who refused | What it means |
+| --- | --- | --- |
+| `FAIL … HTTP 401 {"error":"Unauthorized"}` | **the app** (dashboard guard) | nothing was tested; the credential may be perfectly fine |
+| `FAIL … valid=false error=Token invalid or revoked` | **Cline** | the refresh token really is dead |
+
+The first one is not a verdict on the account. Fix it with any of these:
+
+1. **Dashboard:** Settings → turn **Require login** off temporarily, re-run `verify`, then turn it
+   back on.
+2. **From the dashboard:** open Providers → **Test Connection**. Your browser is logged in, so the
+   request carries a session and the guard lets it through.
+3. **Skip verify, test the real thing:** send one chat request to a free model (for example
+   `cl/cline-free/solar-mini4`). If that answers, the credential works — which is what verify was
+   trying to prove anyway.
+
+A 403 with `Local only: CLI token required` is the same family: the app refused the *caller*, not
+the credential. Run the script on the same machine as the app.
+
 ---
 
 ## 5. Other commands

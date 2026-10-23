@@ -674,6 +674,38 @@ def cmd_verify(args):
         print(f"  {'PASS' if ok else 'FAIL'} {r['email'] or r['name']:<40} {msg}")
 
 
+# The app answers two very different failures with the same word, and only one of
+# them is about the credential:
+#   HTTP 200 {valid:false, error:"Token invalid or revoked"}  -> Cline rejected the token
+#   HTTP 401 {"error":"Unauthorized"}                         -> the app's dashboard guard
+#                                                               refused *this script*, before
+#                                                               Cline was ever contacted
+# Reporting the second one as "verify failed" sends people hunting a dead account
+# that was never tested. Say which one it is.
+GUARD_401_HINT = (
+    "\n    ^ that 401 came from the APP, not from Cline. The test endpoint "
+    "/api/providers/<id>/test requires a dashboard session, and this script sends no "
+    "cookie.\n      Fix: Settings -> turn 'Require login' off temporarily and re-run, "
+    "or press 'Test Connection' in the dashboard (your browser is logged in).\n"
+    "      A genuinely dead credential reports HTTP 200 with "
+    "valid=false error=Token invalid or revoked."
+)
+GUARD_403_HINT = (
+    "\n    ^ the APP refused this route for local-only callers (it wants the CLI token "
+    "header). Run the script on the same machine as the app, or use the dashboard."
+)
+
+
+def app_refusal_hint(status: int, detail: str) -> str:
+    """Explain app-level refusals so a healthy account is not reported as dead."""
+    flat = " ".join(detail.split())
+    if status == 401 and "Unauthorized" in flat:
+        return GUARD_401_HINT
+    if status == 403 and "CLI token required" in flat:
+        return GUARD_403_HINT
+    return ""
+
+
 def app_verify(port: int, conn_id: str) -> tuple[bool, str]:
     url = f"http://127.0.0.1:{port}/api/providers/{conn_id}/test"
     req = urllib.request.Request(url, data=b"{}", method="POST",
@@ -682,7 +714,8 @@ def app_verify(port: int, conn_id: str) -> tuple[bool, str]:
         with urllib.request.urlopen(req, timeout=90) as resp:
             body = json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code} {exc.read()[:160].decode(errors='replace')}"
+        detail = exc.read()[:200].decode(errors="replace").strip()
+        return False, f"HTTP {exc.code} {detail}{app_refusal_hint(exc.code, detail)}"
     except Exception as exc:  # noqa: BLE001
         return False, f"request failed: {exc}"
     if body.get("valid"):
